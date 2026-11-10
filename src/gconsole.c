@@ -168,6 +168,11 @@ void loadexternalpalette(void)
 
 void initicon(void)
 {
+#ifdef __APPLE__
+  // On macOS the window icon replaces the Dock icon, so leave the app
+  // bundle's icon (GoatTracker2.icns) in place instead.
+  return;
+#else
   int handle = io_open("goattrk2.bmp");
   if (handle != -1)
   {
@@ -189,6 +194,7 @@ void initicon(void)
       free(iconbuffer);
     }
   }
+#endif
 }
 void closescreen(void)
 {

@@ -238,6 +238,7 @@ for t in $TOOLS; do
 done
 cp "$DEPS/lib/libSDL-1.2.0.dylib" "$APP/Contents/Frameworks/"
 ditto "$DEPS/SDL2.framework" "$APP/Contents/Frameworks/SDL2.framework"
+cp "$ROOT/macos/GoatTracker2.icns" "$APP/Contents/Resources/GoatTracker2.icns"
 
 cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -248,6 +249,8 @@ cat > "$APP/Contents/Info.plist" <<EOF
     <string>en</string>
     <key>CFBundleExecutable</key>
     <string>goattrk2</string>
+    <key>CFBundleIconFile</key>
+    <string>GoatTracker2</string>
     <key>CFBundleIdentifier</key>
     <string>net.sourceforge.goattracker2.silverfork</string>
     <key>CFBundleInfoDictionaryVersion</key>

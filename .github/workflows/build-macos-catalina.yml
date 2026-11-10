@@ -34,6 +34,13 @@ jobs:
             awk -v v="$1" 'BEGIN { split(v, a, "."); exit !((a[1] < 10) || (a[1] == 10 && a[2] <= 15)) }'
           }
           status=0
+          # app icon is bundled and named in Info.plist
+          icon="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$app/Contents/Info.plist")"
+          if [ -f "$app/Contents/Resources/$icon.icns" ] && file -b "$app/Contents/Resources/$icon.icns" | grep -q 'icon'; then
+            echo "app icon: $icon.icns"
+          else
+            echo "::error::app icon $icon.icns missing from the bundle"; status=1
+          fi
           while IFS= read -r f; do
             case "$(file -b "$f")" in *Mach-O*) ;; *) continue ;; esac
             lipo "$f" -verify_arch x86_64 || { echo "::error::$f has no x86_64 code"; status=1; continue; }
