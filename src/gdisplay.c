@@ -138,7 +138,7 @@ void printstatus(void)
   }
   else
   {
-    printtext(0, 0, 15+16, " PLAY | PLAYPOS | PLAYPATT | STOP | LOAD | SAVE | PACK/RL | HELP | CLEAR | QUIT |");
+    printtext(0, 0, 15+16, " PLAY | PLAYPOS | PLAYPATT | STOP | LOAD | SAVE | PACK/RL | HELP | CLEAR | QUIT | A- | A+ | FULL |");
   }
 
   if ((followplay) && (isplaying()))

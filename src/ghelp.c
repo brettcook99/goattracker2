@@ -27,6 +27,15 @@ void onlinehelp(int standalone,int context)
     NULL
   };
 
+  char *displaykeys[] = {
+    "CTRL/CMD + =  Bigger text",
+    "CTRL/CMD + -  Smaller text",
+    "CTRL/CMD + 0  Default size",
+    "ALT/OPTION+ENTER Fullscreen",
+    "Right-click top bar: A- A+",
+    NULL
+  };
+
   char *genkeys[] = {
     "F1  Play from beginning",
     "F2  Play from current position",
@@ -270,7 +279,11 @@ void onlinehelp(int standalone,int context)
       right++;
 
       printtext(73, mac++, HELP_HEADER, "MAC KEYS");
-      printrows(73, mac, HELP_NORMAL, mackeys);
+      mac = printrows(73, mac, HELP_NORMAL, mackeys);
+      mac++;
+
+      printtext(73, mac++, HELP_HEADER, "DISPLAY");
+      printrows(73, mac, HELP_NORMAL, displaykeys);
     
       printtext(0, left++, HELP_HEADER, "SONG EDIT MODE");
       left = printrows(0,left,HELP_NORMAL, songkeys);

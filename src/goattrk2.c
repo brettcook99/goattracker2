@@ -117,10 +117,10 @@ char* usage[] = {
 	"-Txx Set HardSID interactive mode sound buffer length in milliseconds DEFAULT=20, max.buffering=0",
 	"-Uxx Set HardSID playback mode sound buffer length in milliseconds DEFAULT=400, max.buffering=0",
 	"-Vxx Set finevibrato conversion (0 = off, 1 = on) DEFAULT=on",
-	"-Xxx Set window type (0 = window, 1 = fullscreen) DEFAULT=window",
+	"-Xxx Set window type (0 = window, 1 = fullscreen) DEFAULT=window, ALT+ENTER toggles",
 	"-Yxx Path to a Scala tuning file .scl",
 	"-Zxx Set random reSID write delay in cycles (0 = off) DEFAULT=off",
-	"-wxx Set window scale factor (1 = no scaling, 2 to 4 = 2 to 4 times bigger window) DEFAULT=1",
+	"-wxx Set initial window size (1 to 4 = 1 to 4 times 800x518). The window can be resized freely",
 	"-N   Use NTSC timing",
 	"-P   Use PAL timing (DEFAULT)",
 	"-W   Write sound output to a file SIDAUDIO.RAW",
@@ -212,6 +212,8 @@ int main(int argc, char **argv)
 		getfloatparam(configfile, &equaldivisionsperoctave);
 		getstringparam(configfile, specialnotenames);
 		getstringparam(configfile, scalatuningfilepath);
+		getparam(configfile, &windowedxsize);
+		getparam(configfile, &windowedysize);
 		fclose(configfile);
 	}
 
@@ -361,6 +363,7 @@ int main(int argc, char **argv)
 
 			case 'w':
 				sscanf(&argv[c][2], "%u", &bigwindow);
+				bigwindowcmdline = 1;
 				break;
 			}
 		}
@@ -514,11 +517,13 @@ int main(int argc, char **argv)
 			";reSID-fp type 4 b\n%f\n\n"
 			";reSID-fp voice nonlinearity\n%f\n\n"
 			";Window type (0 = window, 1 = fullscreen)\n%d\n\n"
-			";window scale factor (1 = no scaling, 2 to 4 = 2 to 4 times bigger window)\n%d\n\n"
+			";Window scale factor if no window size is saved below (1 = automatic, 2 to 4 = 2 to 4 times 800x518)\n%d\n\n"
 			";Base pitch of A-4 in Hz (0 = use default frequencytable)\n%f\n\n"
 			";Equal divisions per octave (12 = default, 8.2019143 = Bohlen-Pierce)\n%f\n\n"
-			";Special note names (2 chars for every note in an octave/cycle)\n%s\n\n"
-			";Path to a Scala tuning file .scl\n%s\n\n",
+			";Special note names (2 chars for every note in an octave/cycle, 0 = none)\n%s\n\n"
+			";Path to a Scala tuning file .scl (0 = none)\n%s\n\n"
+			";Window width in windowed mode (0 = automatic)\n%d\n\n"
+			";Window height in windowed mode (0 = automatic)\n%d\n\n",
 			b,
 			mr,
 			hardsid,
@@ -557,8 +562,12 @@ int main(int argc, char **argv)
 			bigwindow,
 			basepitch,
 			equaldivisionsperoctave,
-			specialnotenames,
-			scalatuningfilepath);
+			// Empty strings are written as 0: a blank line would be skipped
+			// when reading, shifting the values after it
+			specialnotenames[0] ? specialnotenames : "0",
+			scalatuningfilepath[0] ? scalatuningfilepath : "0",
+			windowedxsize,
+			windowedysize);
 		fclose(configfile);
 	}
 
@@ -1016,6 +1025,12 @@ void mousecommands(void)
 				clear();
 			if ((mousex >= 74) && (mousex <= 79))
 				quit();
+			if ((mousex >= 81) && (mousex <= 84))
+				changetextsize(-1);
+			if ((mousex >= 86) && (mousex <= 89))
+				changetextsize(1);
+			if ((mousex >= 91) && (mousex <= 96))
+				togglefullscreen();
 		}
 	}
 }
@@ -1501,7 +1516,7 @@ void getparam(FILE *handle, unsigned *value)
 	for (;;)
 	{
 		if (feof(handle)) return;
-		fgets(configbuf, MAX_PATHNAME, handle);
+		if (!fgets(configbuf, MAX_PATHNAME, handle)) return;
 		if ((configbuf[0]) && (configbuf[0] != ';') && (configbuf[0] != ' ') && (configbuf[0] != 13) && (configbuf[0] != 10)) break;
 	}
 
@@ -1553,7 +1568,7 @@ void getfloatparam(FILE *handle, float *value)
 	for (;;)
 	{
 		if (feof(handle)) return;
-		fgets(configbuf, MAX_PATHNAME, handle);
+		if (!fgets(configbuf, MAX_PATHNAME, handle)) return;
 		if ((configbuf[0]) && (configbuf[0] != ';') && (configbuf[0] != ' ') && (configbuf[0] != 13) && (configbuf[0] != 10)) break;
 	}
 
@@ -1569,7 +1584,7 @@ void getstringparam(FILE *handle, char *value)
 	for (;;)
 	{
 		if (feof(handle)) return;
-		fgets(configbuf, MAX_PATHNAME, handle);
+		if (!fgets(configbuf, MAX_PATHNAME, handle)) return;
 		if ((configbuf[0]) && (configbuf[0] != ';') && (configbuf[0] != ' ') && (configbuf[0] != 13) && (configbuf[0] != 10)) break;
 	}
 

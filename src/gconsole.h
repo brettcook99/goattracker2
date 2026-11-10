@@ -18,6 +18,8 @@ void printblankc(int x, int y, int color, int length);
 void drawbox(int x, int y, int color, int sx, int sy);
 void printbg(int x, int y, int color, int length);
 void getkey(void);
+void changetextsize(int dir);
+void togglefullscreen(void);
 
 #ifndef GCONSOLE_C
 extern int key, rawkey, shiftpressed, ctrlpressed, altpressed, metapressed, shiftonlypressed,cursorflashdelay;
@@ -25,6 +27,9 @@ extern int mouseb, prevmouseb;
 extern int mouseheld;
 extern int mousex, mousey;
 extern unsigned bigwindow;
+extern unsigned bigwindowcmdline;
+extern unsigned windowedxsize;
+extern unsigned windowedysize;
 #endif
 
 #endif

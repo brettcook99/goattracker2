@@ -48,3 +48,8 @@ Additional changes in this fork:
 - Better support for some USB keyboards (unwanted characters)
 - Build instructions for MacOS (see separate [txt file](../build_instructions_macos.txt))
 - Builds on Intel macOS 11 and later
+- Resizable window: drag the window edges (or use the green button / ALT+ENTER for fullscreen) and the whole screen scales to fit with sharp text, keeping its proportions.
+- Text size: CTRL/CMD + = (bigger), CTRL/CMD + - (smaller), CTRL/CMD + 0 (default size), or A- / A+ in the right-click top bar menu. In fullscreen the screen always fills the display.
+- The window size is saved to the config and restored on the next start. The default size fits the desktop.
+- Uses the system mouse pointer, so it stays sharp at any size.
+- ALT/OPTION+ENTER no longer also enters a keyoff into the pattern.

@@ -31,6 +31,10 @@ void win_setmousemode(int mode);
 // Global variables
 
 int win_fullscreen = 0; // By default windowed
+int win_fullscreenpending = 0; // Fullscreen toggled, video mode not yet changed
+int win_resizepending = 0; // Window resized by the user, not yet applied
+unsigned win_resizexsize = 0;
+unsigned win_resizeysize = 0;
 int win_windowinitted = 0;
 int win_quitted = 0;
 unsigned char win_keytable[MAX_KEYS] = {0};
@@ -201,8 +205,12 @@ void win_checkmessages(void)
                 win_keystate[keynum] = 1;
                 if ((keynum == KEY_ENTER) && ((win_keystate[KEY_ALT]) || (win_keystate[KEY_RIGHTALT])))
                 {
+                    // The application applies the new video mode; the
+                    // keypress itself is consumed
                     win_fullscreen ^= 1;
-                    gfx_reinit();
+                    win_fullscreenpending = 1;
+                    win_keytable[keynum] = 0;
+                    win_asciikey = 0;
                 }
             }
             break;
@@ -217,6 +225,13 @@ void win_checkmessages(void)
             break;
 
             case SDL_VIDEORESIZE:
+            // Only the latest size matters; the application applies it
+            win_resizexsize = event.resize.w;
+            win_resizeysize = event.resize.h;
+            win_resizepending = 1;
+            gfx_redraw = 1;
+            break;
+
             case SDL_VIDEOEXPOSE:
             gfx_redraw = 1;
             break;

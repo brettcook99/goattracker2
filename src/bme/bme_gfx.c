@@ -96,12 +96,17 @@ int gfx_init(unsigned xsize, unsigned ysize, unsigned framerate, unsigned flags)
     if (flags & GFX_WINDOW) sdlflags &= ~SDL_FULLSCREEN;
     if (sdlflags & SDL_FULLSCREEN) gfx_fullscreen = 1;
         else gfx_fullscreen = 0;
+    if ((flags & GFX_RESIZABLE) && (!gfx_fullscreen)) sdlflags |= SDL_RESIZABLE;
 
-    // Calculate virtual window size
+    // Calculate virtual window size. A resizable window keeps its exact
+    // width, so that mouse coordinates map 1:1 to window pixels
 
     gfx_virtualxsize = xsize;
-    gfx_virtualxsize /= 16;
-    gfx_virtualxsize *= 16;
+    if (!(flags & GFX_RESIZABLE))
+    {
+        gfx_virtualxsize /= 16;
+        gfx_virtualxsize *= 16;
+    }
     gfx_virtualysize = ysize;
 
     if ((!gfx_virtualxsize) || (!gfx_virtualysize))

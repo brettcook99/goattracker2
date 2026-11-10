@@ -9,6 +9,14 @@
 #include <string.h>
 #include "goattrk2.h"
 
+// Size of one character of the font (chargen.bin) in pixels
+#define FONT_XSIZE 8
+#define FONT_YSIZE 14
+
+// Size of the whole screen at 1x scale (the smallest window size)
+#define BASE_XSIZE (MAX_COLUMNS * FONT_XSIZE)
+#define BASE_YSIZE (MAX_ROWS * FONT_YSIZE)
+
 int gfxinitted = 0;
 unsigned *scrbuffer = NULL;
 unsigned *prevscrbuffer = NULL;
@@ -27,18 +35,41 @@ unsigned mousex = 0;
 unsigned mousey = 0;
 unsigned mousepixelx = 0;
 unsigned mousepixely = 0;
-unsigned oldmousepixelx = 0xffffffff;
-unsigned oldmousepixely = 0xffffffff;
 int mouseheld = 0;
 int region[MAX_ROWS];
-int fontwidth = 8;
-int fontheight = 14;
-int mousesizex = 11;
-int mousesizey = 20;
-unsigned bigwindow = 1;
+
+// Window size settings (saved in the config file)
+unsigned bigwindow = 1;           // Initial size as a multiple of 1x (-w option)
+unsigned bigwindowcmdline = 0;    // -w was given on the command line
+unsigned windowedxsize = 0;       // Size of the window when not fullscreen,
+unsigned windowedysize = 0;       // 0 = automatic
+
+// Current layout of the character grid inside the window: every character
+// cell is cellw * cellh pixels and the grid is centered in the window
+static int cellw = FONT_XSIZE;
+static int cellh = FONT_YSIZE;
+static int gridx = 0;
+static int gridy = 0;
+static int layoutxsize = 0;
+static int layoutysize = 0;
+
+// The font scaled to the current cell size: one byte per pixel, 1 = foreground
+static unsigned char *glyphcache = NULL;
+
+// Size of the desktop, 0 if unknown
+static int desktopxsize = 0;
+static int desktopysize = 0;
+
+// Text size steps (percent of 1x) used by CTRL/CMD + and -
+static const int zoomsteps[] = {100, 125, 150, 175, 200, 225, 250, 275, 300, 350, 400, 500, 600};
+#define NUM_ZOOMSTEPS ((int)(sizeof zoomsteps / sizeof zoomsteps[0]))
 
 void loadexternalpalette(void);
 void initicon(void);
+static void initwindowsize(void);
+static int setvideomode(void);
+static int updatelayout(void);
+static void applyvideochanges(void);
 
 inline void setcharcolor(unsigned *dptr, short ch, short color)
 {
@@ -53,26 +84,21 @@ inline void setcolor(unsigned *dptr, short color)
 int initscreen(void)
 {
   int handle;
-
-  if (bigwindow > 1)
-  {
-    fontwidth *= bigwindow;
-    fontheight *= bigwindow;
-    mousesizex *= 2;
-    mousesizey *= 2;
-  }
+  const SDL_VideoInfo *info;
 
   if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER) < 0)
     return 0;
   win_openwindow("GoatTracker", NULL);
-  win_setmousemode(MOUSE_ALWAYS_HIDDEN);
+  // Use the system mouse pointer: it stays sharp at any window size
+  win_setmousemode(MOUSE_ALWAYS_VISIBLE);
   initicon();
 
-  if (!gfx_init(MAX_COLUMNS * fontwidth, MAX_ROWS * fontheight, 60, 0))
+  // The desktop size can only be asked before the first video mode is set
+  info = SDL_GetVideoInfo();
+  if ((info) && (info->current_w > 0) && (info->current_h > 0))
   {
-    win_fullscreen = 0;
-    if (!gfx_init(MAX_COLUMNS * fontwidth, MAX_ROWS * fontheight, 60, 0))
-      return 0;
+    desktopxsize = info->current_w;
+    desktopysize = info->current_h;
   }
 
   scrbuffer = (unsigned*)malloc(MAX_COLUMNS * MAX_ROWS * sizeof(unsigned));
@@ -90,10 +116,10 @@ int initscreen(void)
 
   gfx_loadpalette("palette.bin");
   loadexternalpalette();
-  gfx_setpalette();
 
-  if (bigwindow - 1) gfx_loadsprites(0, "bcursor.bin");
-  else gfx_loadsprites(0, "cursor.bin");
+  initwindowsize();
+  if (!setvideomode()) return 0;
+  gfx_setpalette();
 
   gfxinitted = 1;
   clearscreen();
@@ -181,9 +207,287 @@ void closescreen(void)
     free(chardata);
     chardata = NULL;
   }
+  if (glyphcache)
+  {
+    free(glyphcache);
+    glyphcache = NULL;
+  }
 
   gfxinitted = 0;
 }
+
+/*
+ * Window size & scaling
+ */
+
+// Largest character cell that fits maxx * maxy pixels with the whole grid,
+// keeping the 8:14 shape of the font (rounded to whole pixels)
+static void fitcell(int maxx, int maxy, int *w, int *h)
+{
+  int maxw = maxx / MAX_COLUMNS;
+  int maxh = maxy / MAX_ROWS;
+
+  if (maxw < 1) maxw = 1;
+  if (maxh < 1) maxh = 1;
+
+  *h = maxh;
+  *w = (maxh * FONT_XSIZE * 2 + FONT_YSIZE) / (FONT_YSIZE * 2);
+  if (*w > maxw)
+  {
+    *w = maxw;
+    *h = (maxw * FONT_YSIZE * 2 + FONT_XSIZE) / (FONT_XSIZE * 2);
+    if (*h > maxh) *h = maxh;
+  }
+  if (*w < 1) *w = 1;
+  if (*h < 1) *h = 1;
+}
+
+// Window size for a text size in percent of 1x
+static void zoomsize(int percent, unsigned *xsize, unsigned *ysize)
+{
+  *xsize = MAX_COLUMNS * ((FONT_XSIZE * percent + 50) / 100);
+  *ysize = MAX_ROWS * ((FONT_YSIZE * percent + 50) / 100);
+}
+
+// Largest window that fits the given percentage of the desktop
+static void fitsize(int xpercent, int ypercent, unsigned *xsize, unsigned *ysize)
+{
+  int w, h;
+
+  if ((!desktopxsize) || (!desktopysize))
+  {
+    // Desktop size unknown: no limit other than the largest text size
+    zoomsize(zoomsteps[NUM_ZOOMSTEPS-1], xsize, ysize);
+    return;
+  }
+
+  fitcell(desktopxsize * xpercent / 100, desktopysize * ypercent / 100, &w, &h);
+  if ((w < FONT_XSIZE) || (h < FONT_YSIZE))
+  {
+    w = FONT_XSIZE;
+    h = FONT_YSIZE;
+  }
+  *xsize = w * MAX_COLUMNS;
+  *ysize = h * MAX_ROWS;
+}
+
+// Window size used when nothing else is set: large, but leaves room for
+// the title bar, menu bar, dock or taskbar
+static void defaultsize(unsigned *xsize, unsigned *ysize)
+{
+  fitsize(90, 80, xsize, ysize);
+}
+
+// Keep the window at least 1x (unless the desktop is smaller than that)
+static void clampminsize(unsigned *xsize, unsigned *ysize)
+{
+  unsigned minx = BASE_XSIZE;
+  unsigned miny = BASE_YSIZE;
+
+  if ((desktopxsize) && ((unsigned)desktopxsize < minx)) minx = desktopxsize;
+  if ((desktopysize) && ((unsigned)desktopysize < miny)) miny = desktopysize;
+  if (*xsize < minx) *xsize = minx;
+  if (*ysize < miny) *ysize = miny;
+}
+
+static void initwindowsize(void)
+{
+  if (bigwindow < 1) bigwindow = 1;
+
+  if (bigwindowcmdline)
+    zoomsize(bigwindow * 100, &windowedxsize, &windowedysize);
+  else if ((windowedxsize) && (windowedysize))
+    ; // Use the size saved in the config file
+  else if (bigwindow > 1)
+    zoomsize(bigwindow * 100, &windowedxsize, &windowedysize);
+  else
+    defaultsize(&windowedxsize, &windowedysize);
+
+  // A size too big for this desktop (for example saved while using a larger
+  // monitor) is replaced by the largest size that fits
+  if ((desktopxsize) && (desktopysize) &&
+      ((windowedxsize > (unsigned)desktopxsize) || (windowedysize > (unsigned)desktopysize)))
+    fitsize(92, 88, &windowedxsize, &windowedysize);
+
+  clampminsize(&windowedxsize, &windowedysize);
+}
+
+// Set the video mode: fullscreen at desktop resolution, or a resizable window
+static int setvideomode(void)
+{
+  if (win_fullscreen)
+  {
+    unsigned xsize = desktopxsize ? desktopxsize : windowedxsize;
+    unsigned ysize = desktopysize ? desktopysize : windowedysize;
+
+    if (gfx_init(xsize, ysize, 60, GFX_FULLSCREEN)) goto MODESET;
+    win_fullscreen = 0;
+  }
+
+  if (gfx_init(windowedxsize, windowedysize, 60, GFX_WINDOW | GFX_RESIZABLE)) goto MODESET;
+
+  windowedxsize = BASE_XSIZE;
+  windowedysize = BASE_YSIZE;
+  if (gfx_init(windowedxsize, windowedysize, 60, GFX_WINDOW | GFX_RESIZABLE)) goto MODESET;
+
+  gfx_screen = NULL;
+  return 0;
+
+  MODESET:
+  gfx_redraw = 1;
+  updatelayout();
+  return 1;
+}
+
+// Recalculate the character grid layout and the scaled font if the window
+// size has changed. Returns 0 if there is nothing to draw on
+static int updatelayout(void)
+{
+  int w, h, c, px, py;
+  int xsize, ysize;
+  unsigned char *dptr;
+
+  if ((!gfx_screen) || (!chardata)) return 0;
+
+  xsize = gfx_screen->w;
+  ysize = gfx_screen->h;
+  if ((xsize == layoutxsize) && (ysize == layoutysize) && (glyphcache)) return 1;
+
+  // Too small to hold one pixel per character
+  if ((xsize < MAX_COLUMNS) || (ysize < MAX_ROWS)) return 0;
+
+  fitcell(xsize, ysize, &w, &h);
+
+  if (glyphcache) free(glyphcache);
+  glyphcache = (unsigned char*)malloc(256 * w * h);
+  if (!glyphcache) return 0;
+
+  // Scale the font with nearest-neighbour sampling at pixel centers. Font
+  // rows 1-14 of each 16-byte character are used, bit 7 is the leftmost pixel
+  dptr = glyphcache;
+  for (c = 0; c < 256; c++)
+  {
+    for (py = 0; py < h; py++)
+    {
+      unsigned char bits = chardata[c * 16 + 1 + ((2 * py + 1) * FONT_YSIZE) / (2 * h)];
+      for (px = 0; px < w; px++)
+        *dptr++ = (bits >> (7 - ((2 * px + 1) * FONT_XSIZE) / (2 * w))) & 1;
+    }
+  }
+
+  cellw = w;
+  cellh = h;
+  gridx = (xsize - w * MAX_COLUMNS) / 2;
+  gridy = (ysize - h * MAX_ROWS) / 2;
+  layoutxsize = xsize;
+  layoutysize = ysize;
+  gfx_redraw = 1;
+  return 1;
+}
+
+// Apply a fullscreen toggle or a window resize requested by the user
+static void applyvideochanges(void)
+{
+  if ((!gfxinitted) || (!gfx_screen))
+  {
+    win_fullscreenpending = 0;
+    win_resizepending = 0;
+    return;
+  }
+
+  if (win_fullscreenpending)
+  {
+    win_fullscreenpending = 0;
+    win_resizepending = 0;
+    setvideomode();
+    return;
+  }
+
+  if (win_resizepending)
+  {
+    win_resizepending = 0;
+    if (gfx_fullscreen) return;
+
+    windowedxsize = win_resizexsize;
+    windowedysize = win_resizeysize;
+    clampminsize(&windowedxsize, &windowedysize);
+    if ((windowedxsize != gfx_screen->w) || (windowedysize != gfx_screen->h))
+      setvideomode();
+  }
+}
+
+// Change the text size: dir > 0 bigger, dir < 0 smaller, 0 = default size.
+// In windowed mode this resizes the window; in fullscreen the screen is
+// always as large as the display allows
+void changetextsize(int dir)
+{
+  unsigned xsize = 0;
+  unsigned ysize = 0;
+  unsigned w, h;
+  int c;
+
+  if ((!gfxinitted) || (!gfx_screen) || (gfx_fullscreen)) return;
+
+  if (!dir)
+    defaultsize(&xsize, &ysize);
+  else if (dir > 0)
+  {
+    unsigned maxx, maxy;
+
+    fitsize(92, 88, &maxx, &maxy);
+    for (c = 0; c < NUM_ZOOMSTEPS; c++)
+    {
+      zoomsize(zoomsteps[c], &w, &h);
+      if ((int)(h / MAX_ROWS) > cellh)
+      {
+        xsize = w;
+        ysize = h;
+        break;
+      }
+    }
+    // Next step doesn't fit: go to the largest size that does
+    if ((!xsize) || (xsize > maxx) || (ysize > maxy))
+    {
+      xsize = maxx;
+      ysize = maxy;
+    }
+    if ((int)(ysize / MAX_ROWS) <= cellh) return;
+  }
+  else
+  {
+    for (c = NUM_ZOOMSTEPS-1; c >= 0; c--)
+    {
+      zoomsize(zoomsteps[c], &w, &h);
+      if ((int)(h / MAX_ROWS) < cellh)
+      {
+        xsize = w;
+        ysize = h;
+        break;
+      }
+    }
+    if (!xsize) return; // Already at the smallest size
+  }
+
+  clampminsize(&xsize, &ysize);
+  windowedxsize = xsize;
+  windowedysize = ysize;
+  if ((windowedxsize != gfx_screen->w) || (windowedysize != gfx_screen->h))
+    setvideomode();
+}
+
+void togglefullscreen(void)
+{
+  if (!gfxinitted) return;
+
+  win_fullscreen ^= 1;
+  win_fullscreenpending = 0;
+  win_resizepending = 0;
+  setvideomode();
+}
+
+/*
+ * Text output
+ */
 
 void clearscreen(void)
 {
@@ -325,230 +629,52 @@ void fliptoscreen(void)
   unsigned *sptr = scrbuffer;
   unsigned *cmpptr = prevscrbuffer;
   int x,y;
-  int regionschanged = 0;
+  int fullredraw = 0;
 
   if (!gfxinitted) return;
+  if (!updatelayout()) return;
 
-  // Mark previous mousecursor area changed if mouse moved
-  if ((mousepixelx != oldmousepixelx) || (mousepixely != oldmousepixely))
-  {
-    if ((oldmousepixelx >= 0) && (oldmousepixely >= 0))
-    {
-      int sy = oldmousepixely / fontheight;
-      int ey = (oldmousepixely + mousesizey - 1) / fontheight;
-      int sx = oldmousepixelx / fontwidth;
-      int ex = (oldmousepixelx + mousesizex - 1) / fontwidth;
-
-      if (ey >= MAX_ROWS) ey = MAX_ROWS - 1;
-      if (ex >= MAX_COLUMNS) ex = MAX_COLUMNS - 1;
-
-      for (y = sy; y <= ey; y++)
-      {
-        for (x = sx; x <= ex; x++)
-          prevscrbuffer[y*MAX_COLUMNS+x] = 0xffffffff;
-      }
-    }
-  }
-
-  // If redraw requested, mark whole screen changed
+  // If redraw requested, clear the whole window (also the margins around
+  // the character grid) and mark the whole screen changed
   if (gfx_redraw)
   {
     gfx_redraw = 0;
+    fullredraw = 1;
+    SDL_FillRect(gfx_screen, NULL, 0);
     memset(prevscrbuffer, 0xff, MAX_COLUMNS*MAX_ROWS*sizeof(unsigned));
   }
 
-  if (!gfx_lock()) return;
+  if (!gfx_lock())
+  {
+    if (fullredraw) gfx_redraw = 1;
+    return;
+  }
 
   // Now redraw text on changed areas
   for (y = 0; y < MAX_ROWS; y++)
   {
+    unsigned char *rowptr = (unsigned char*)gfx_screen->pixels + (gridy + y*cellh) * gfx_screen->pitch + gridx;
+
     for (x = 0; x < MAX_COLUMNS; x++)
     {
       // Check if char changed
       if (*sptr != *cmpptr)
       {
+        unsigned char *gptr = glyphcache + (*sptr & 0xff) * cellw * cellh;
+        unsigned char *dptr = rowptr + x*cellw;
+        unsigned char bgcolor = ((*sptr) >> 20) & 0xf;
+        unsigned char fgcolor = ((*sptr) >> 16) & 0xf;
+        int px, py;
+
         *cmpptr = *sptr;
         region[y] = 1;
-        regionschanged = 1;
 
+        for (py = 0; py < cellh; py++)
         {
-          unsigned char *chptr = &chardata[(*sptr & 0xffff)*16];
-          unsigned char *dptr = (unsigned char*)gfx_screen->pixels + y*fontheight * gfx_screen->pitch + x*fontwidth;
-          unsigned char bgcolor = (*sptr) >> 20;
-          unsigned char fgcolor = ((*sptr) >> 16) & 0xf;
-          int c;
-          unsigned char e = *chptr++;
-
-          for (c = 0; c < 14; c++)
-          {
-            e = *chptr++;
-            
-            switch (bigwindow)
-            {
-              case 1:
-                if (e & 128) *dptr++ = fgcolor;
-                else *dptr++ = bgcolor;
-                if (e & 64) *dptr++ = fgcolor;
-                else *dptr++ = bgcolor;
-                if (e & 32) *dptr++ = fgcolor;
-                else *dptr++ = bgcolor;
-                if (e & 16) *dptr++ = fgcolor;
-                else *dptr++ = bgcolor;
-                if (e & 8) *dptr++ = fgcolor;
-                else *dptr++ = bgcolor;
-                if (e & 4) *dptr++ = fgcolor;
-                else *dptr++ = bgcolor;
-                if (e & 2) *dptr++ = fgcolor;
-                else *dptr++ = bgcolor;
-                if (e & 1) *dptr++ = fgcolor;
-                else *dptr++ = bgcolor;
-                dptr += gfx_screen->pitch - fontwidth;
-              break;
-              case 2:
-                if (e & 128) {*dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 64) {*dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 32) {*dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 16) {*dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 8) {*dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 4) {*dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 2) {*dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 1) {*dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor;}
-                dptr += gfx_screen->pitch - fontwidth;
-                if (e & 128) {*dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 64) {*dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 32) {*dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 16) {*dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 8) {*dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 4) {*dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 2) {*dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 1) {*dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor;}
-                dptr += gfx_screen->pitch - fontwidth;
-              break;
-              case 3:
-                *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;
-                *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;
-                *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;
-                *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;
-                *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;
-                *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;
-                *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;
-                *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;
-                dptr += gfx_screen->pitch - fontwidth;
-                if (e & 128) {*dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 64) {*dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 32) {*dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 16) {*dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 8) {*dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 4) {*dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 2) {*dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 1) {*dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                dptr += gfx_screen->pitch - fontwidth;
-                if (e & 128) {*dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 64) {*dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 32) {*dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 16) {*dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 8) {*dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 4) {*dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 2) {*dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 1) {*dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                dptr += gfx_screen->pitch - fontwidth;
-              break;
-              case 4:
-                *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;
-                *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;
-                *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;
-                *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;
-                *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;
-                *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;
-                *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;
-                *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;
-                dptr += gfx_screen->pitch - fontwidth;
-                if (e & 128) {*dptr++ = bgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 64) {*dptr++ = bgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 32) {*dptr++ = bgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 16) {*dptr++ = bgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 8) {*dptr++ = bgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 4) {*dptr++ = bgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 2) {*dptr++ = bgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 1) {*dptr++ = bgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                dptr += gfx_screen->pitch - fontwidth;
-                if (e & 128) {*dptr++ = bgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 64) {*dptr++ = bgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 32) {*dptr++ = bgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 16) {*dptr++ = bgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 8) {*dptr++ = bgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 4) {*dptr++ = bgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 2) {*dptr++ = bgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 1) {*dptr++ = bgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                dptr += gfx_screen->pitch - fontwidth;
-                if (e & 128) {*dptr++ = bgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 64) {*dptr++ = bgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 32) {*dptr++ = bgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 16) {*dptr++ = bgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 8) {*dptr++ = bgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 4) {*dptr++ = bgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 2) {*dptr++ = bgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                if (e & 1) {*dptr++ = bgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor; *dptr++ = fgcolor;}
-                else {*dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor; *dptr++ = bgcolor;}
-                dptr += gfx_screen->pitch - fontwidth;
-              break;
-            }
-          }
+          for (px = 0; px < cellw; px++)
+            dptr[px] = gptr[px] ? fgcolor : bgcolor;
+          gptr += cellw;
+          dptr += gfx_screen->pitch;
         }
       }
       sptr++;
@@ -556,31 +682,23 @@ void fliptoscreen(void)
     }
   }
 
-
-  // Redraw mouse if text was redrawn
-  if (regionschanged)
-  {
-    int sy = mousepixely / fontheight;
-    int ey = (mousepixely + mousesizey - 1) / fontheight;
-    if (ey >= MAX_ROWS) ey = MAX_ROWS - 1;
-
-    gfx_drawsprite(mousepixelx, mousepixely, 0x1);
-    for (y = sy; y <= ey; y++)
-      region[y] = 1;
-  }
-
-  // Store current mouse position as old
-  oldmousepixelx = mousepixelx;
-  oldmousepixely = mousepixely;
+  gfx_unlock();
 
   // Redraw changed screen regions
-  gfx_unlock();
-  for (y = 0; y < MAX_ROWS; y++)
+  if (fullredraw)
   {
-    if (region[y])
+    SDL_UpdateRect(gfx_screen, 0, 0, 0, 0);
+    memset(region, 0, sizeof region);
+  }
+  else
+  {
+    for (y = 0; y < MAX_ROWS; y++)
     {
-      SDL_UpdateRect(gfx_screen, 0, y*fontheight, MAX_COLUMNS*fontwidth, fontheight);
-      region[y] = 0;
+      if (region[y])
+      {
+        SDL_UpdateRect(gfx_screen, gridx, gridy + y*cellh, MAX_COLUMNS*cellw, cellh);
+        region[y] = 0;
+      }
     }
   }
 }
@@ -588,15 +706,27 @@ void fliptoscreen(void)
 void getkey(void)
 {
   int c;
+  int mx, my;
   win_asciikey = 0;
   cursorflashdelay += win_getspeed(50);
 
+  applyvideochanges();
+  updatelayout();
+
   prevmouseb = mouseb;
 
+  // Convert mouse position to a character position. Positions in the
+  // margins around the grid go to the nearest edge character
   mou_getpos(&mousepixelx, &mousepixely);
   mouseb = mou_getbuttons();
-  mousex = mousepixelx / fontwidth;
-  mousey = mousepixely / fontheight;
+  mx = (int)mousepixelx - gridx;
+  my = (int)mousepixely - gridy;
+  mx = (mx < 0) ? 0 : mx / cellw;
+  my = (my < 0) ? 0 : my / cellh;
+  if (mx >= MAX_COLUMNS) mx = MAX_COLUMNS - 1;
+  if (my >= MAX_ROWS) my = MAX_ROWS - 1;
+  mousex = mx;
+  mousey = my;
 
   if (mouseb) mouseheld++;
   else mouseheld = 0;
@@ -636,8 +766,51 @@ void getkey(void)
   if (win_keystate[KEY_ALT] || win_keystate[KEY_RIGHTALT])
       altpressed = 1;
 
-  if (win_keystate[SDLK_LMETA] || win_keystate[SDLK_RMETA])
+  if (win_keystate[SDLK_LMETA] || win_keystate[SDLK_RMETA] ||
+      win_keystate[SDLK_LSUPER] || win_keystate[SDLK_RSUPER])
     metapressed = 1;
+
+  // Text size: CTRL/CMD + = bigger, - smaller, 0 default. The key is
+  // consumed so that it doesn't also change instrument or enter a note.
+  // The typed character is checked too: a very short tap can be released
+  // within one frame, which loses the rawkey but not the character
+  if ((ctrlpressed || metapressed) && (!altpressed))
+  {
+    int dir = 2; // 2 = not a text size key
+
+    switch (rawkey)
+    {
+      case SDLK_EQUALS:
+      case SDLK_PLUS:
+      case SDLK_KP_PLUS:
+      dir = 1;
+      break;
+
+      case SDLK_MINUS:
+      case SDLK_KP_MINUS:
+      dir = -1;
+      break;
+
+      case SDLK_0:
+      case SDLK_KP0:
+      dir = 0;
+      break;
+
+      case 0:
+      if ((key == '=') || (key == '+')) dir = 1;
+      if (key == '-') dir = -1;
+      if (key == '0') dir = 0;
+      break;
+    }
+
+    if (dir != 2)
+    {
+      changetextsize(dir);
+      key = 0;
+      rawkey = 0;
+      return;
+    }
+  }
 
   if (rawkey == SDLK_KP_ENTER)
   {
@@ -656,9 +829,9 @@ void getkey(void)
   if (rawkey == SDLK_KP8) key = '8';
   if (rawkey == SDLK_KP9) key = '9';
 
-  if (rawkey == SDLK_INSERT) 
+  if (rawkey == SDLK_INSERT)
     // some keyboard/systems provide a key code that gets interpreted as additional keystroke
-    // in some cases (table editor). Observed with a Dell USB keyboard on macOS 11. 
+    // in some cases (table editor). Observed with a Dell USB keyboard on macOS 11.
     key = 0;
 
   if ((rawkey == SDLK_BACKSPACE && altpressed) ||
