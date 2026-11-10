@@ -26,18 +26,6 @@ void printmainscreen(void)
 {
   clearscreen();
   printstatus();
-  
-  printtext(36, 35, 0x07, "Tweaks & fixes by");
-  printtext(54, 35, 0x0f, "RaveGuru");
-  printtext(55, 35, 0x0a, "aveGur");
-  printtext(56, 35, 0x07, "veGu");
-  printtext(57, 35, 0x03, "e");
-  printtext(58, 35, 0x08, "G");
-
-  printtext(40, 36, 0x07, "Undo by");
-  printtext(48, 36, 0x0f, "Jason Page");
-  printtext(49, 36, 0x07, "ason Pag");
-  printtext(50, 36, 0x08, "son Pa");
 
   // printtext(39, 36, 1, "1");
   // printtext(40, 36, 2, "2");
