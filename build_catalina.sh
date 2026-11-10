@@ -110,7 +110,7 @@ fetch() {
     fi
     echo "Downloading $url"
     rm -f "$dest.part"
-    curl -fL --retry 3 --connect-timeout 30 -o "$dest.part" "$url" \
+    curl -fsSL --retry 3 --connect-timeout 30 -o "$dest.part" "$url" \
         || die "download failed: $url
        You can download it manually with a browser and place it at:
          $dest"
@@ -155,10 +155,13 @@ mkdir -p "$SDL12_OBJ" "$DEPS/lib" "$DEPS/include"
 
 SDL12_CFLAGS=(-O2 -fPIC -DNDEBUG -D_THREAD_SAFE -DSDL_DISABLE_IMMINTRIN_H -w)
 
-# The library itself is compiled against the SDL2 headers...
-"${CC_CMD[@]}" "${SDL12_CFLAGS[@]}" -I"$DEPS/SDL2.framework/Headers" \
+# The library itself is compiled against the SDL2 headers. sdl12-compat
+# includes "SDL.h" (needs -I) and the framework's headers include each other
+# as <SDL2/...> (needs -F, the framework search path).
+SDL2_INC=(-F"$DEPS" -I"$DEPS/SDL2.framework/Headers")
+"${CC_CMD[@]}" "${SDL12_CFLAGS[@]}" "${SDL2_INC[@]}" \
     -c "$SDL12_SRC/src/SDL12_compat.c" -o "$SDL12_OBJ/SDL12_compat.o"
-"${CC_CMD[@]}" "${SDL12_CFLAGS[@]}" -I"$DEPS/SDL2.framework/Headers" \
+"${CC_CMD[@]}" "${SDL12_CFLAGS[@]}" "${SDL2_INC[@]}" \
     -c "$SDL12_SRC/src/SDL12_compat_objc.m" -o "$SDL12_OBJ/SDL12_compat_objc.o"
 
 # ...and loads SDL2 at runtime from the app's Contents/Frameworks folder.
