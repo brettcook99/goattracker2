@@ -1,0 +1,16 @@
+# Keep Unix line endings in the working tree on every platform.
+# Makefiles and shell scripts break on macOS/Linux if they get CRLF endings,
+# which happens when the repo is checked out on Windows and copied to a Mac.
+* text=auto eol=lf
+
+*.bin binary
+*.dat binary
+*.prg binary
+*.sng binary
+*.ins binary
+*.lbm binary
+*.bmp binary
+*.ico binary
+*.res binary
+*.exe binary
+*.pdf binary

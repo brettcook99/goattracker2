@@ -1,3 +1,5 @@
 .vscode/
 linux/
 *.o
+build-macos/
+GoatTracker2.app/

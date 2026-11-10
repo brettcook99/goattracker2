@@ -1,0 +1,82 @@
+Building GoatTracker 2 (Silver Fork) on macOS 10.15 Catalina
+============================================================
+
+Why the regular instructions don't work on Catalina
+---------------------------------------------------
+- The prebuilt binaries in the sf-v1.1 release zip are Apple Silicon (arm64)
+  only, need macOS 13 or newer, and expect Homebrew's SDL in /opt/homebrew.
+  Catalina only runs on Intel Macs, so they can never start there.
+- "brew install sdl12-compat" is unreliable on Catalina: Homebrew no longer
+  supports it, so there are no prebuilt packages and builds from source
+  often fail.
+- The release zip also contains leftover arm64 .o files in src/, so running
+  "make" on an Intel Mac tries to link them and fails.
+
+build_catalina.sh avoids all of this. It does not use Homebrew. It downloads
+the official SDL2 framework and the sdl12-compat source (about 3 MB, checked
+against SHA-256 checksums), builds everything for Intel, and produces a
+self-contained GoatTracker2.app.
+
+
+Steps
+-----
+1. Install the Xcode Command Line Tools if you don't have them:
+
+     xcode-select --install
+
+   If that says the tools can't be found, download
+   "Command Line Tools for Xcode 12.4" (the last version for Catalina) from
+   https://developer.apple.com/download/all/ (requires a free Apple ID).
+
+2. Copy this whole folder to the Mac (USB stick, AirDrop, network share),
+   or push it to your own GitHub repository and clone it on the Mac.
+
+3. Open Terminal, cd into the folder and run:
+
+     bash build_catalina.sh
+
+   The first build takes a minute or two. At the end the script checks the
+   result and runs a quick self-test.
+
+4. Start the tracker:
+
+     open GoatTracker2.app
+
+   or double-click GoatTracker2.app in Finder. You can drag it to
+   /Applications. The app is self-contained, so you can copy it to other
+   Catalina (or newer) Macs too.
+
+
+Notes
+-----
+- Hold the fn key to use F1-F12, or tick "Use F1, F2, etc. keys as standard
+  function keys" in System Preferences > Keyboard. You may also want to turn
+  off Mission Control shortcuts that clash with the tracker's keys
+  (System Preferences > Keyboard > Shortcuts).
+- Settings are saved in ~/.goattrk/goattrk2.cfg.
+- When started from Finder, the file browser opens in the folder that
+  contains GoatTracker2.app.
+- The command line tools are inside the app bundle:
+    GoatTracker2.app/Contents/MacOS/gt2reloc   song.sng song.sid
+    GoatTracker2.app/Contents/MacOS/ins2snd2
+    GoatTracker2.app/Contents/MacOS/sngspli2
+    GoatTracker2.app/Contents/MacOS/mod2sng
+  They need the libraries in GoatTracker2.app/Contents/Frameworks, so run
+  them from there instead of copying them somewhere else.
+- No internet connection on the Mac? Download these two files with any
+  computer, put them in build-macos/downloads/ (create the folder), and run
+  the script again:
+    https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-2.32.10.dmg
+    https://github.com/libsdl-org/sdl12-compat/releases/download/release-1.2.78/sdl12-compat-1.2.78.tar.gz
+- If you copied the folder from Windows and the script says the makefiles
+  have CRLF line endings, follow the command it prints, or clone the
+  repository on the Mac instead.
+- If you get a "cannot be opened because the developer cannot be verified"
+  message for an app someone else built, right-click it, choose Open, and
+  confirm. Apps you build yourself don't trigger this.
+- To build a universal app (Intel + Apple Silicon) on a newer Mac:
+    ARCH="x86_64 arm64" bash build_catalina.sh
+- The included GitHub Actions workflow (.github/workflows/
+  build-macos-catalina.yml) runs the same script on an Intel Mac in the
+  cloud and offers the finished app as a downloadable zip. It runs when you
+  push this repository to GitHub.

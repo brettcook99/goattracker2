@@ -1,0 +1,55 @@
+name: macOS Catalina build
+
+# Builds GoatTracker2.app for Intel Macs running macOS 10.15 Catalina or later
+# with build_catalina.sh, checks that it doesn't depend on Homebrew and that
+# every binary in it allows macOS 10.15, then uploads it as a zip artifact.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    # Intel runner, so the x86_64 app's self-test runs natively.
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build GoatTracker2.app (x86_64, macOS 10.15+)
+        run: bash build_catalina.sh
+
+      - name: Verify the bundle runs on Catalina
+        run: |
+          set -euo pipefail
+          app=GoatTracker2.app
+          # minimum macOS of a Mach-O file (x86_64 slice)
+          minos() {
+            otool -arch x86_64 -l "$1" | awk '
+              /LC_BUILD_VERSION|LC_VERSION_MIN_MACOSX/ { f = 1 }
+              f && !done && /^ *(minos|version) / { print $2; done = 1 }'
+          }
+          # true if version $1 <= 10.15
+          le_1015() {
+            awk -v v="$1" 'BEGIN { split(v, a, "."); exit !((a[1] < 10) || (a[1] == 10 && a[2] <= 15)) }'
+          }
+          status=0
+          while IFS= read -r f; do
+            case "$(file -b "$f")" in *Mach-O*) ;; *) continue ;; esac
+            lipo "$f" -verify_arch x86_64 || { echo "::error::$f has no x86_64 code"; status=1; continue; }
+            v="$(minos "$f")"
+            echo "$f: minimum macOS $v"
+            le_1015 "$v" || { echo "::error::$f requires macOS $v"; status=1; }
+            if otool -L "$f" | tail -n +2 | grep -E '/opt/homebrew|/usr/local|/opt/local'; then
+              echo "::error::$f links a library outside the app bundle"; status=1
+            fi
+          done < <(find "$app" -type f)
+          exit $status
+
+      - name: Package
+        run: ditto -c -k --sequesterRsrc --keepParent GoatTracker2.app GoatTracker2-catalina-x86_64.zip
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: GoatTracker2-catalina-x86_64
+          path: GoatTracker2-catalina-x86_64.zip
