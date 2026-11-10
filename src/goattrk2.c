@@ -121,6 +121,7 @@ char* usage[] = {
 	"-Yxx Path to a Scala tuning file .scl",
 	"-Zxx Set random reSID write delay in cycles (0 = off) DEFAULT=off",
 	"-wxx Set initial window size (1 to 4 = 1 to 4 times 800x518). The window can be resized freely",
+	"-mxx MIDI keyboard input (0 = off, 1 = on) DEFAULT=on",
 	"-N   Use NTSC timing",
 	"-P   Use PAL timing (DEFAULT)",
 	"-W   Write sound output to a file SIDAUDIO.RAW",
@@ -214,6 +215,7 @@ int main(int argc, char **argv)
 		getstringparam(configfile, scalatuningfilepath);
 		getparam(configfile, &windowedxsize);
 		getparam(configfile, &windowedysize);
+		getparam(configfile, &midiinput);
 		fclose(configfile);
 	}
 
@@ -341,6 +343,10 @@ int main(int argc, char **argv)
 				sscanf(&argv[c][2], "%u", &win_fullscreen);
 				break;
 
+			case 'm':
+				sscanf(&argv[c][2], "%u", &midiinput);
+				break;
+
 			case 'C':
 				sscanf(&argv[c][2], "%u", &catweasel);
 				break;
@@ -396,6 +402,7 @@ int main(int argc, char **argv)
 	if (!stepsize) stepsize = 4;
 	if (editorInfo.multiplier > 16) editorInfo.multiplier = 16;
 	if (keypreset > 2) keypreset = 0;
+	if (midiinput > 1) midiinput = 1;
 
 	// removing 'usefinevib' since it's not actually being used and is
 	// not being saved. Code suggests FV not to be used for multi-speed. 
@@ -445,6 +452,10 @@ int main(int argc, char **argv)
 		waitkeynoupdate();
 	}
 
+	// Open MIDI input devices
+	if (midiinput)
+		midi_init();
+
 	// Load song if applicable
 	if (strlen(songfilename))
 	{
@@ -460,8 +471,9 @@ int main(int argc, char **argv)
 		docommand();
 	}
 
-	// Shutdown sound output now
+	// Shutdown sound output & MIDI input now
 	sound_uninit();
+	midi_uninit();
 
 	// Save configuration
 #ifndef __WIN32__
@@ -523,7 +535,8 @@ int main(int argc, char **argv)
 			";Special note names (2 chars for every note in an octave/cycle, 0 = none)\n%s\n\n"
 			";Path to a Scala tuning file .scl (0 = none)\n%s\n\n"
 			";Window width in windowed mode (0 = automatic)\n%d\n\n"
-			";Window height in windowed mode (0 = automatic)\n%d\n\n",
+			";Window height in windowed mode (0 = automatic)\n%d\n\n"
+			";MIDI keyboard input (0 = off, 1 = on)\n%d\n\n",
 			b,
 			mr,
 			hardsid,
@@ -567,7 +580,8 @@ int main(int argc, char **argv)
 			specialnotenames[0] ? specialnotenames : "0",
 			scalatuningfilepath[0] ? scalatuningfilepath : "0",
 			windowedxsize,
-			windowedysize);
+			windowedysize,
+			midiinput);
 		fclose(configfile);
 	}
 
@@ -597,6 +611,7 @@ void waitkeymouse(void)
 		if ((rawkey) || (key)) break;
 		if (win_quitted) break;
 		if (mouseb) break;
+		if ((midinoteon) || (midinoteoff)) break;
 	}
 
 	converthex();
@@ -716,8 +731,36 @@ void docommand(void)
 	{
 		undoFreeUndoObject((GTUNDO_OBJECT*)ed);
 	}
+	// MIDI keyboard note on/off
+	midicommands();
+
 	// General commands
 	generalcommands();
+}
+
+void midicommands(void)
+{
+	// Last note played from the MIDI keyboard, and the channel it plays on
+	static int lastnote = 0;
+	static int lastchn = 0;
+
+	if (midinoteon)
+	{
+		// The pattern editor enters & plays the note like a note key does.
+		// Elsewhere (except the songname editor) the note is just played
+		if ((editorInfo.editmode != EDIT_PATTERN) && (editorInfo.editmode != EDIT_NAMES))
+			playtestnote(midinoteon, editorInfo.einum, editorInfo.epchn);
+		lastnote = midinoteon;
+		lastchn = editorInfo.epchn;
+	}
+
+	// Releasing the key that played last releases the note, like on a
+	// synth. Releasing a key that is no longer sounding does nothing
+	if ((midinoteoff) && (midinoteoff == lastnote))
+	{
+		releasenote(lastchn);
+		lastnote = 0;
+	}
 }
 
 void mousecommands(void)

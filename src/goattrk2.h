@@ -28,6 +28,7 @@
 #include "gorder.h"
 #include "ginstr.h"
 #include "gtable.h"
+#include "gmidi.h"
 
 #define EDIT_PATTERN 0
 #define EDIT_ORDERLIST 1
@@ -113,6 +114,7 @@ void docommand(void);
 void onlinehelp(int standalone, int context);
 void mousecommands(void);
 void generalcommands(void);
+void midicommands(void);
 void load(void);
 void save(void);
 void quit(void);

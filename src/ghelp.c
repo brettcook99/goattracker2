@@ -67,6 +67,7 @@ void onlinehelp(int standalone,int context)
 
   char *patternkeys[] = {
     "Enter notes like on a piano",
+    "MIDI keyboard enters notes too",
     "0-9 & A-F to enter commands",
     "SPC Switch between jam/editmode",
     "BACKSPC Insert rest",
@@ -111,6 +112,7 @@ void onlinehelp(int standalone,int context)
     "0-9 & A-F to enter parameters",
     "SPC Play test note",
     "SHIFT+SPC Silence test note",
+    "MIDI keyboard plays test notes",
     "RET Go to table",
     "- + Select instrument",
     "/ * Select octave",

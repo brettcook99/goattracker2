@@ -53,3 +53,4 @@ Additional changes in this fork:
 - The window size is saved to the config and restored on the next start. The default size fits the desktop.
 - Uses the system mouse pointer, so it stays sharp at any size.
 - ALT/OPTION+ENTER no longer also enters a keyoff into the pattern.
+- MIDI keyboard input (macOS and Windows): notes played on a MIDI keyboard work like the note keys. In the pattern editor they are entered in edit mode and played in jam mode; in the other editors they play the current instrument. Releasing the key releases the note. MIDI note 60 (middle C) is C-4. All MIDI devices and channels are used, and on macOS devices plugged in while the tracker runs are picked up automatically. Turn it off with the `-m0` option or in the config file.

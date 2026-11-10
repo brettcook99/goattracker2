@@ -6,13 +6,13 @@ CC:=gcc
 CXX:=g++
 PREFIX=../win32/
 SUFFIX=.exe
-LIBS=-lmingw32 -lSDLmain -lSDL.dll -static-libstdc++ -static-libgcc -static
+LIBS=-lmingw32 -lSDLmain -lSDL.dll -lwinmm -static-libstdc++ -static-libgcc -static
 RM=	-del
 
 include makefile.common
 
 $(PREFIX)goattrk2$(SUFFIX): goatdata.o goattrk2.o gsong.o gorder.o gpattern.o ginstr.o gtable.o gplay.o gdisplay.o \
-gfile.o greloc.o ghelp.o gsound.o gconsole.o gundo.o gsid.o \
+gfile.o greloc.o ghelp.o gsound.o gconsole.o gundo.o gsid.o gmidi.o \
 resid/envelope.o resid/extfilt.o resid/filter.o resid/pot.o resid/sid.o resid/wave.o resid/wave6581__ST.o \
 resid/wave6581_P_T.o resid/wave6581_PS_.o resid/wave6581_PST.o resid/wave8580__ST.o resid/wave8580_P_T.o \
 resid/wave8580_PS_.o resid/wave8580_PST.o resid/voice.o \

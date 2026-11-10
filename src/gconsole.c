@@ -29,6 +29,8 @@ int ctrlpressed = 0;
 int altpressed = 0;
 int metapressed = 0;
 int cursorflashdelay = 0;
+int midinoteon = 0;
+int midinoteoff = 0;
 int mouseb = 0;
 int prevmouseb = 0;
 unsigned mousex = 0;
@@ -750,6 +752,23 @@ void getkey(void)
         win_keytable[c] = 0;
         break;
       }
+    }
+  }
+
+  // MIDI input: one note event per frame, as a GoatTracker note. MIDI note
+  // 60 (middle C) is C-4. Events wait in the queue while a key is handled
+  midinoteon = 0;
+  midinoteoff = 0;
+  if ((!key) && (!rawkey))
+  {
+    int midinote;
+    int event = midi_getevent(&midinote);
+    int note = FIRSTNOTE + midinote - 12;
+
+    if ((event) && (note >= FIRSTNOTE) && (note <= LASTNOTE))
+    {
+      if (event == MIDI_NOTEON) midinoteon = note;
+      else midinoteoff = note;
     }
   }
 

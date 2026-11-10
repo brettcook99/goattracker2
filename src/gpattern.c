@@ -107,6 +107,8 @@ void patterncommands(void)
     }
 
     if (newnote > LASTNOTE) newnote = -1;
+    // A note from a MIDI keyboard works like a note key, in any column
+    if (midinoteon) newnote = midinoteon;
     if ((rawkey == 0x08) && (!editorInfo.epcolumn)) newnote = REST;
     if ((rawkey == 0x14) && (!editorInfo.epcolumn)) newnote = KEYOFF;
     if (rawkey == KEY_ENTER)

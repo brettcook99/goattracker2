@@ -23,6 +23,7 @@ void togglefullscreen(void);
 
 #ifndef GCONSOLE_C
 extern int key, rawkey, shiftpressed, ctrlpressed, altpressed, metapressed, shiftonlypressed,cursorflashdelay;
+extern int midinoteon, midinoteoff;
 extern int mouseb, prevmouseb;
 extern int mouseheld;
 extern int mousex, mousey;
